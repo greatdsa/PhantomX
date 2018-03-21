@@ -2,7 +2,7 @@
 // Define Options
 //=============================================================================
 
-//#define OPT_WRISTROT           // comment this out if you are not using the wrist rotate
+#define OPT_WRISTROT           // comment this out if you are not using the wrist rotate
 #define ARBOTIX_TO  5000      // if no message for a second probably turned off...
 #define MAX_SERVO_DELTA_PERSEC 512
 
@@ -231,6 +231,8 @@ void MoveArmTo(int sBase, int sShoulder, int sElbow, int sWrist, int sWristRot, 
   if (sDelta > sMaxDelta)
     sMaxDelta = sDelta;
   bioloid.setNextPose(SID_WRIST, sWrist);
+  
+  bioloid.setNextPose(SID_WRISTROT, sWristRot);
  
   bioloid.setNextPose(SID_GRIP, sGrip);
 
