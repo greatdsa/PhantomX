@@ -1,0 +1,263 @@
+//=============================================================================
+// Define Options
+//=============================================================================
+
+//#define OPT_WRISTROT           // comment this out if you are not using the wrist rotate
+#define ARBOTIX_TO  5000      // if no message for a second probably turned off...
+#define MAX_SERVO_DELTA_PERSEC 512
+
+//=============================================================================
+// Global Include files
+//=============================================================================
+#include <ax12.h>
+#include <BioloidController.h>
+#include <Commander.h>
+
+//=============================================================================
+//=============================================================================
+/* Servo IDs */
+enum {
+  SID_BASE=1, SID_RSHOULDER, SID_LSHOULDER, SID_RELBOW, SID_LELBOW, SID_WRIST, SID_WRISTROT, SID_GRIP};
+
+
+#define CNT_SERVOS  8 
+
+#define IK_MAX_X  350
+#define IK_MIN_X  -350
+
+#define IK_MAX_Y  350
+#define IK_MIN_Y  -303 //-350*sin(60°)
+
+#define IK_MAX_Z  350
+#define IK_MIN_Z  30
+
+// Define Ranges for the different servos
+#define BASE_MIN    0
+#define BASE_MAX    1023
+
+#define SHOULDER_MIN  205 
+#define SHOULDER_MAX  810
+
+#define ELBOW_MIN    210
+#define ELBOW_MAX    900
+
+#define WRIST_MIN    200
+#define WRIST_MAX    830
+
+#define WROT_MIN     0  //WristRotate
+#define WROT_MAX     1023
+
+#define GRIP_MIN     0
+#define GRIP_MAX     512
+
+// Define some lengths and offsets used by the arm
+#define BaseHeight           90L
+#define BaseActualHeight     115L
+#define ShoulderLength       145L                         
+#define ShoulderServoOffset  35L
+#define ShoulderOffsetRad    0.237L
+#define ShoulderActualLength 149L   // X is about 145, y is about 35 so sqrt is about 149, so about 14 degrees (0.237 rads)offset
+#define ElbowLength          147L   //(L2)Length of the Arm from Elbow Joint to Wrist Joint
+#define WristLength          137L   // (L3)Wrist length including Wrist rotate
+
+//=============================================================================
+// Global Objects
+//=============================================================================
+Commander command;
+BioloidController bioloid = BioloidController(1000000);
+
+//=============================================================================
+// Global Variables
+//=============================================================================
+boolean         g_fArmActive = false;   // Is the arm logically on?
+boolean         g_fServosFree = true;
+
+// Current IK values
+int            g_sIKGA;                  // IK Gripper angle..
+int            g_sIKX;                  // Current X value in mm
+int            g_sIKY;
+int            g_sIKZ;
+
+// Values for current servo values for the different joints
+int             g_sBase;                // Current Base servo value
+int             g_sShoulder;            // Current shoulder target 
+int             g_sElbow;               // Current elbow value
+int             g_sWrist;               // Current Wrist value
+int             g_sWristRot;            // Current Wrist rotation
+int             g_sGrip;                // Current Grip position
+
+int sBase, sShoulder, sElbow, sWrist, sWristRot, sGrip;
+
+// Message informatino
+unsigned long   ulLastMsgTime;          // Keep track of when the last message arrived to see if controller off
+byte            buttonsPrev;            // will use when we wish to only process a button press once
+
+#ifdef DEBUG
+boolean        g_fDebugOutput = false;
+#endif
+
+
+//===================================================================================================
+// Setup 
+//====================================================================================================
+void setup() {
+  bioloid.poseSize = CNT_SERVOS;
+  bioloid.readPose();
+
+  Serial.begin(38400);
+  Serial.flush();
+
+  PutArmToSleep();
+
+  //set Gripper Compliance so it doesn't tear itself apart
+  ax12SetRegister(SID_GRIP, AX_CW_COMPLIANCE_SLOPE, 128);
+  ax12SetRegister(SID_GRIP, AX_CCW_COMPLIANCE_SLOPE, 128);
+
+}
+//===================================================================================================
+// loop: Our main Loop!
+//===================================================================================================
+void loop() {
+
+  Serial.println("please give command!");
+  delay(1000);
+  Serial.flush();
+
+  if (Serial.available()>0) {
+    delay(1000);
+    char command = Serial.read();
+    delay(1000);
+  
+    if (command == 's'){
+      while(Serial.available()){
+        char getData = Serial.read();
+        }
+      //Serial.println("roboter sleeps now!");
+
+      //Serial.flush();
+      //delay(1000);
+      PutArmToSleep(); 
+      }
+    
+     
+    else if (command == 'h'){
+      while(Serial.available()){
+        char getData = Serial.read();
+        }
+      //Serial.println("roboter goes home now!");
+
+      //Serial.flush();
+      //delay(1000);
+      MoveArmToHome();  
+      }
+
+  }
+  
+}
+ 
+
+//===================================================================================================
+// MoveArmToHome
+//===================================================================================================
+void MoveArmToHome(void) {
+  Serial.println("we are in home function");
+  Serial.flush();
+  delay(1000);
+    
+  MoveArmTo(512, 512, 330, 690, 512, 256, 500, true);
+}
+
+//===================================================================================================
+// PutArmToSleep
+//===================================================================================================
+void PutArmToSleep(void) {
+  Serial.println("we are in sleep function");
+  Serial.flush();
+  delay(1000);
+  
+  g_fArmActive = false;
+  MoveArmTo(512, 212, 212, 512, 512, 256, 1000, true);
+
+   //And Relax all of the servos...
+  for(uint8_t i=1; i <= CNT_SERVOS; i++) {
+    Relax(i);
+  }
+  g_fServosFree = true;
+}
+
+//===================================================================================================
+// MoveArmTo
+//===================================================================================================
+void MoveArmTo(int sBase, int sShoulder, int sElbow, int sWrist, int sWristRot, int sGrip, int wTime, boolean fWait) {
+
+  int sMaxDelta;
+  int sDelta;
+
+  // First make sure servos are not free...
+  if (g_fServosFree) {
+    g_fServosFree = false;
+
+    for(uint8_t i=1; i <= CNT_SERVOS; i++) {
+      TorqueOn(i);
+    }
+    bioloid.readPose();
+  }
+
+  // Make sure the previous movement completed.
+  // Need to do it before setNextPos calls as this
+  // is used in the interpolating code...
+  while (bioloid.interpolating > 0) {
+    bioloid.interpolateStep();
+    delay(3);
+  }
+
+  // Also lets limit how fast the servos will move as to not get whiplash.
+  sMaxDelta = abs(bioloid.getCurPose(SID_BASE) - sBase);
+  bioloid.setNextPose(SID_BASE, sBase);
+
+  sDelta = abs(bioloid.getCurPose(SID_RSHOULDER) - sShoulder);
+  if (sDelta > sMaxDelta)
+    sMaxDelta = sDelta;
+  bioloid.setNextPose(SID_RSHOULDER, sShoulder);
+  bioloid.setNextPose(SID_LSHOULDER, 1024-sShoulder);
+
+  sDelta = abs(bioloid.getCurPose(SID_RELBOW) - sElbow);
+  if (sDelta > sMaxDelta)
+    sMaxDelta = sDelta;
+  bioloid.setNextPose(SID_RELBOW, sElbow);
+  bioloid.setNextPose(SID_LELBOW, 1024-sElbow);
+
+  sDelta = abs(bioloid.getCurPose(SID_WRIST) - sWrist);
+  if (sDelta > sMaxDelta)
+    sMaxDelta = sDelta;
+  bioloid.setNextPose(SID_WRIST, sWrist);
+ 
+  bioloid.setNextPose(SID_GRIP, sGrip);
+
+
+  // Save away the current positions...
+  g_sBase = sBase;
+  g_sShoulder = sShoulder;
+  g_sElbow = sElbow;
+  g_sWrist = sWrist;
+  g_sWristRot = sWristRot;
+  g_sGrip = sGrip;
+
+  // Now start the move - But first make sure we don't move too fast.  
+  if (((long)sMaxDelta/(wTime/1000L)) > MAX_SERVO_DELTA_PERSEC) {
+    wTime = ((long)sMaxDelta*1000L)/ MAX_SERVO_DELTA_PERSEC;
+  }
+
+  bioloid.interpolateSetup(wTime);
+
+  // Do at least the first movement
+  bioloid.interpolateStep();
+
+  // And if asked to, wait for the previous move to complete...
+  if (fWait) {
+    while (bioloid.interpolating > 0) {
+      bioloid.interpolateStep();
+      delay(3);
+    }
+  }
+}
